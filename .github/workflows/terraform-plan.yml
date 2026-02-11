@@ -1,0 +1,74 @@
+name: Terraform Plan (PR checks)
+
+on:
+  pull_request:
+    paths:
+      - 'envs/**'
+      - 'modules/**'
+  push:
+    branches:
+      - main
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start LocalStack
+        run: |
+          docker run -d --name localstack-ci -p 4566:4566 -e SERVICES=s3,iam,cloudformation localstack/localstack:latest
+
+      - name: Docker Lint (Compose Validation)
+        run: |
+          docker compose config --quiet
+      - name: Wait for LocalStack
+        run: |
+          for i in $(seq 1 30); do
+            if curl -s http://localhost:4566/_localstack/health | grep "\"s3\": \"\(running\|available\)\"" >/dev/null 2>&1; then
+              echo "LocalStack is healthy"
+              exit 0
+            fi
+            echo "Waiting for LocalStack ($i/30)..."
+            sleep 3
+          done
+          echo "LocalStack did not become healthy"
+          docker logs localstack-ci
+          exit 1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.5.7'
+
+      - name: Terraform Init (dev)
+        working-directory: ./envs/dev
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+        run: |
+          terraform init -input=false
+
+      - name: Terraform Fmt & Validate
+        working-directory: ./envs/dev
+        run: |
+          terraform fmt -check
+          terraform validate
+
+      - name: Terraform Plan
+        working-directory: ./envs/dev
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_DEFAULT_REGION: us-east-1
+          TF_VAR_localstack_host: localhost
+        run: |
+          terraform plan -input=false -no-color -out=tfplan || true
+      
+      - name: Upload Plan Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ./envs/dev/tfplan
