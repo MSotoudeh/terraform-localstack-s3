@@ -1,251 +1,89 @@
-# Terraform + LocalStack S3 Lab
+# terraform-localstack-s3
 
-Infrastructure as Code — Controlled Windows → Linux Execution Model
+A Terraform lab that creates an S3 bucket against LocalStack (a local AWS emulator) running in Docker, with a reusable `s3_bucket` module, a `dev` environment, a CI workflow and helper scripts for a disposable Ubuntu VM.
 
-![Terraform](https://img.shields.io/badge/terraform-%235835CC.svg?style=for-the-badge&logo=terraform&logoColor=white)
-![Docker](https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white)
-![AWS](https://img.shields.io/badge/AWS-%23FF9900.svg?style=for-the-badge&logo=amazon-aws&logoColor=white)
-![LocalStack](https://img.shields.io/badge/LocalStack-000000?style=for-the-badge&logo=localstack&logoColor=white)
-![Bash](https://img.shields.io/badge/Shell_Script-121011?style=for-the-badge&logo=gnu-bash&logoColor=white)
+## Status
 
----
+**Active, small by design.** A zero-cost practice lab for Infrastructure as Code; it never talks to real AWS.
 
-## Overview
+## What it does
 
-This repository demonstrates a controlled Infrastructure-as-Code workflow using Terraform to provision AWS S3 resources against a LocalStack instance running inside a dedicated Ubuntu virtual machine.
+- Defines a reusable module (`modules/s3_bucket`) that creates a bucket, sets ownership controls and applies an ACL.
+- Instantiates it in `envs/dev` with the bucket `tf-localstack-lab-demo`.
+- Points the AWS provider at LocalStack (`http://localhost:4566`, dummy credentials `test`/`test`).
+- Provides `docker-compose.yml` to start LocalStack with `s3`, `iam` and `cloudformation`.
+- Provides a GitHub Actions workflow that starts LocalStack, runs `terraform init`, `fmt -check`, `validate` and `plan`, and uploads the plan.
+- Provides VM helper scripts (`scripts/`) to prepare, reset and wipe the Ubuntu VM used as the execution host.
 
-The design separates:
+## How it works
 
-* **Code authoring (Windows host)**
-* **Execution environment (Linux VM)**
-* **Cloud simulation layer (LocalStack via Docker)**
-
-The objective is to model real-world cloud provisioning practices while maintaining zero AWS cost and full environment isolation.
-
----
-
-## Architecture
+Intended workflow ("author on Windows, execute on Linux"): write code on a Windows host, push to Git, then run Terraform inside an Ubuntu VM that hosts Docker and LocalStack.
 
 ```
-Windows Host (10.0.0.2)
-   |
-   |  Git / Code Authoring
-   v
-Ubuntu VM (10.0.0.1)
-   |
-   |  Terraform Execution
-   v
-Docker Engine
-   |
-   v
-LocalStack (S3 endpoint emulation)
+Windows host  --git-->  Ubuntu VM  --terraform-->  Docker: LocalStack (S3 on :4566)
 ```
 
----
+`envs/dev/provider.tf` pins Terraform `>= 1.5.0` and the AWS provider `~> 5.0`, and sets the LocalStack endpoint. `modules/s3_bucket` takes `bucket_name`, `acl` (default `private`) and `tags`, and outputs `bucket_id` and `bucket_arn`.
 
-## Environment Model
+## Quick start
 
-| Layer           | Responsibility                  | Technology             |
-| --------------- | ------------------------------- | ---------------------- |
-| Windows Host    | Code creation, Git operations   | Windows 11, PowerShell |
-| Ubuntu VM       | Execution & testing environment | Ubuntu 24.04           |
-| Container Layer | Cloud API simulation            | Docker Engine          |
-| AWS Emulation   | S3 endpoint                     | LocalStack             |
-
-**Key principle:**
-All infrastructure code is written on Windows.
-All infrastructure execution occurs inside the Ubuntu VM.
-
-No direct production AWS interaction occurs in this lab.
-
----
-
-## Terraform Configuration (Core Example)
-
-Provider configured for LocalStack:
-
-```hcl
-provider "aws" {
-  region                      = "us-east-1"
-  access_key                  = "test"
-  secret_key                  = "test"
-  skip_credentials_validation = true
-  skip_requesting_account_id  = true
-
-  endpoints {
-    s3 = "http://localhost:4566"
-  }
-}
-```
-
-Example resource:
-
-```hcl
-resource "aws_s3_bucket" "lab_bucket" {
-  bucket = "tf-localstack-lab-demo"
-  acl    = "private"
-
-  tags = {
-    environment = "lab"
-    managed_by  = "terraform"
-  }
-}
-```
-
----
-
-## Development Workflow
-
-### 1️⃣ Author Code (Windows Host)
-
-```powershell
-cd C:\GitHub\terraform-localstack-s3
-git add .
-git commit -m "update terraform configuration"
-git push
-```
-
----
-
-### 2️⃣ Execute in Ubuntu VM
-
-SSH into VM:
+Needs Docker and Terraform >= 1.5 (on the VM or locally).
 
 ```bash
-ssh user@10.0.0.1
-cd ~/projects/terraform-localstack-s3
-```
-
-Start LocalStack:
-
-```bash
-docker compose up -d
-```
-
-Run Terraform:
-
-```bash
-export AWS_ACCESS_KEY_ID=test
-export AWS_SECRET_ACCESS_KEY=test
-export AWS_DEFAULT_REGION=us-east-1
-
+docker compose up -d                       # start LocalStack on :4566
+cd envs/dev
+export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
 terraform init
 terraform fmt -check
 terraform validate
 terraform plan
 terraform apply -auto-approve
-```
-
----
-
-### 3️⃣ Verify Resource
-
-```bash
-aws --endpoint-url=http://localhost:4566 s3 ls
-```
-
----
-
-### 4️⃣ Teardown
-
-```bash
+aws --endpoint-url=http://localhost:4566 s3 ls   # verify (needs AWS CLI)
 terraform destroy -auto-approve
 docker compose down
 ```
 
----
+Note that Terraform commands run in `envs/dev`; the root has no Terraform configuration.
 
-## Automation Scripts
+### Disposable VM helpers (optional, Ubuntu only)
 
-### `bootstrap.sh`
-
-* Installs Docker
-* Installs Terraform
-* Pulls LocalStack image
-* Prepares working directory
-* Idempotent execution model
-
-### `reset_lab.sh`
-
-* Removes Terraform state
-* Restarts LocalStack container
-
-### `nuke_vm.sh`
-
-* Purges Docker images and volumes
-* Removes LocalStack data
-* Restores VM to clean lab state
-
----
-
-## Security Model
-
-This lab intentionally avoids:
-
-* Exposing Docker daemon over TCP (2375)
-* Direct root-level remote Docker binding
-* Real AWS credentials
-
-Remote Docker access, if required, should be performed over SSH using:
-
-```
-docker context create vm --docker "host=ssh://user@10.0.0.1"
+```bash
+sudo bash scripts/bootstrap.sh   # Docker, Terraform, Ansible, AWS CLI, yq, lazygit, UFW (22, 5000, 4566 from the SSH client IP)
+./scripts/reset-lab.sh           # compose down -v, docker prune, remove Terraform state (run from repo root)
+sudo ./scripts/nuke-vm.sh        # purge Docker, Terraform, Ansible, AWS CLI, firewall (run from repo root)
 ```
 
-Unencrypted Docker TCP exposure is not used in this design.
+These scripts are destructive; use them only on a VM you can discard. They are a hardened sibling of the scripts in [docker-flask-app](https://github.com/MSotoudeh/docker-flask-app); see [docs/lab-scripts.md](docs/lab-scripts.md).
 
----
+## Configuration
 
-## Terraform Best Practices Applied
+No `.env` file is needed. Terraform reads the standard AWS variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, any dummy values for LocalStack) and the variable `TF_VAR_localstack_host` (declared in `envs/dev/provider.tf` but not yet used by the endpoint). No `terraform.tfvars` is tracked; real `*.tfvars` files are git-ignored.
 
-* Provider version pinning
-* Environment separation (`envs/dev`)
-* Module abstraction (`modules/s3_bucket`)
-* No credentials committed
-* Explicit tagging
-* Explicit destroy workflow
+## Project layout
 
----
+```
+envs/dev/             Terraform root module for the dev lab (provider + module call)
+modules/s3_bucket/    reusable S3 bucket module
+scripts/              VM bootstrap / reset / wipe helpers
+docs/                 history and notes on the shared lab scripts
+.github/workflows/    CI: LocalStack + terraform fmt/validate/plan
+docker-compose.yml    LocalStack service
+```
 
-## Development Loop Strategy
+## Testing
 
-The repeatable loop is:
+```bash
+docker compose config --quiet
+cd envs/dev && terraform init -input=false && terraform fmt -check && terraform validate
+bash -n scripts/*.sh
+```
 
-1. Modify Terraform configuration (Windows).
-2. Push changes to Git.
-3. SSH into VM.
-4. Run `terraform plan`.
-5. Apply or destroy.
-6. Reset environment when required.
+`terraform plan` and `apply` need a running LocalStack (`docker compose up -d`). CI runs the same steps.
 
-This mirrors real-world cloud development cycles while remaining fully isolated.
+## Contributing
 
----
-
-## Why LocalStack
-
-* Zero AWS cost
-* Safe experimentation
-* Fast iteration
-* Offline capability
-* Deterministic testing environment
-
----
-
-## Future Enhancements
-
-* Remote backend simulation
-* CI workflow with LocalStack container
-* Terraform plan artifact upload
-* Static analysis (tflint, checkov)
-* Multi-environment expansion (dev/stage)
-
----
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT License
-
----
-
-Maintained as part of a DevOps Infrastructure portfolio demonstrating Terraform-based infrastructure workflows within a controlled lab environment.
+[MIT](LICENSE)

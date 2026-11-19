@@ -1,7 +1,33 @@
+# Terraform
 .terraform/
 .terraform.lock.hcl
-terraform.tfstate
-terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+crash.log
+tfplan
+*.tfplan
+# Real variable files may hold secrets; commit only *.tfvars.example
+*.tfvars
+*.auto.tfvars
+!*.tfvars.example
 
+# LocalStack data (docker-compose volume)
+localstack/
+
+# Secrets and local environment
 .aws/
+secrets/
+.secrets/
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+
+# Editors, worktrees, OS junk
+.idea/
+.vscode/
+.worktrees/
+.DS_Store
+Thumbs.db
